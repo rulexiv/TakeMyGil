@@ -30,6 +30,7 @@ TMG.State = {
     ChatTradeCancelled = false,
     ChatTradeAmount = nil,
     ChatTradeReceived = 0,
+    CancelledDelayUntil = 0,
     ReceiveTradeOpenTime = 0,
     ReceiveOtherState = nil,
     ReceiveOtherStateStable = 0,
@@ -49,7 +50,8 @@ TMG.DELAY_LONG = 600
 TMG.TIMEOUT_TRADE_WINDOW = 10000
 TMG.TIMEOUT_PARTNER = 60000
 TMG.MAX_RETRY = 3
-TMG.TIMEOUT_GIL_UPDATE = 3000
+TMG.TIMEOUT_GIL_UPDATE = 6000
+TMG.TRADE_RANGE = 3.0
 
 local visible = false
 
@@ -94,6 +96,16 @@ local function ControlIsReady(controlName)
 end
 
 local GetTarget
+local function GetTargetDistance(target)
+    if not target then
+        return nil
+    end
+    return target.distance2d or target.distance
+end
+
+local function IsPlayerMoving()
+    return Player and Player.IsMoving and Player:IsMoving() or false
+end
 
 local function NormalizeName(s)
     if not s then
@@ -350,6 +362,17 @@ local function RunSendLogic()
                 return
             end
 
+            local dist = GetTargetDistance(target)
+            if dist and dist > TMG.TRADE_RANGE and target.pos then
+                Log("Target too far (" .. string.format("%.1f", dist) .. "). Moving closer...")
+                Player:MoveTo(target.pos.x, target.pos.y, target.pos.z, TMG.TRADE_RANGE, 0, 0, target.id)
+                return
+            end
+            if IsPlayerMoving() then
+                Player:PauseMovement()
+                return
+            end
+
             Log("Initiating Trade... Remaining: " .. TMG.State.RemainingAmount)
             SendTextCommand("/trade")
             InitChatCursor()
@@ -475,9 +498,9 @@ local function RunSendLogic()
                  UseControlAction("Trade", "Trade")
              end
          elseif not IsControlOpen("Trade") and not IsControlOpen("SelectYesno") then
-             Log("Trade cancelled by partner or system.")
-             ResetSendSessionState()
-             SetState("NEXT_LOOP")
+             Log("Trade closed. Verifying via chat/gil update.")
+             TMG.State.GilCheckStart = Now()
+             SetState("WAIT_GIL_UPDATE")
          elseif StateTimedOut(TMG.TIMEOUT_PARTNER) then
              Log("Partner confirmation timed out. Cancelling.")
              UseControlAction("Trade", "Cancel")
@@ -509,6 +532,7 @@ local function RunSendLogic()
         if TMG.State.ChatTradeCancelled then
             Log("Trade cancelled via chat log.")
             ResetSendSessionState()
+            TMG.State.CancelledDelayUntil = Now() + 500
             SetState("NEXT_LOOP")
             return
         end
@@ -541,12 +565,16 @@ local function RunSendLogic()
             TMG.State.GilBeforeSession = nil
             SetState("NEXT_LOOP")
         elseif TimeSince(TMG.State.GilCheckStart) > TMG.TIMEOUT_GIL_UPDATE then
-            Log("Trade cancelled or not completed. Gil delta: " .. tostring(delta))
+            Log("Trade result unconfirmed. Stopping to avoid duplicate send. Gil delta: " .. tostring(delta))
             TMG.State.GilBeforeSession = nil
-            SetState("NEXT_LOOP")
+            TMG.State.IsRunning = false
+            SetState("IDLE")
         end
     elseif state == "NEXT_LOOP" then
          if Throttle(TMG.DELAY_SHORT) then
+              if TMG.State.CancelledDelayUntil and Now() < TMG.State.CancelledDelayUntil then
+                  return
+              end
               if TMG.State.RemainingAmount > 0 then
                   SetState("INIT_TRADE")
               else
@@ -636,9 +664,9 @@ function TMG.Draw()
             
             local target = GetTarget()
             if target then
-                GUI:TextDisabled("Target: " .. target.name)
+                GUI:TextDisabled("To: " .. target.name)
             else
-                GUI:TextDisabled("Target: -")
+                GUI:TextDisabled("To: -")
             end
             
             local btnLabel, btnColor
@@ -709,7 +737,7 @@ function TMG.Draw()
     local miniH = btnH
     local baseY = sh - miniH - gap
     if TMG.State.MiniPosX == 0 then
-        TMG.State.MiniPosX = sw - miniW - 210
+        TMG.State.MiniPosX = sw - miniW - 230
     end
     TMG.State.MiniPosX = math.max(0, math.min(sw - miniW, TMG.State.MiniPosX))
     GUI:SetNextWindowPos(TMG.State.MiniPosX, baseY, GUI.SetCond_Always)
