@@ -4,28 +4,28 @@
 
 Automates sending gil via trade with a compact UI and progress tracking.
 
-Version: 1.0
+Version: 2.1.0
 
 ## Features
 - Send mode with large-amount splitting
 - Trade flow automation with confirmation handling
-- Progress bar during active send
+- Animated progress bar during active send
 - Result summary on completion
 - Mini SEND/RECV buttons for quick access
 
 ## Usage
 1. Open the mini SEND button to show the main UI.
 2. Enter the amount, use quick-add buttons if needed.
-3. Press `TRADE` to start.
+3. Press the main button to start (label stays the same; color indicates state).
 4. Use the mini RECV button to toggle receive monitoring.
 
 ## Notes
 - RECV cannot be started while SEND is running.
 - The main UI is SEND-only; RECV is controlled from the mini button.
+- When RECV is on, the top line shows “Receiver mode: on.”
 
 ## Installation
 1. Copy the `TakeMyGil` folder to your FFXIVMinion LuaMods directory:
    `C:\MINIONAPP\Bots\FFXIVMinion64\LuaMods\`
 2. In the Minion menu, go to **Reload Lua**.
 3. The tracked bar will appear at the bottom right of the game window.
-
