@@ -243,73 +243,85 @@ local function InitChatCursor()
     ResetTradeChatState()
 end
 
-local function GetProgress(total, remaining)
+local function DrawProgressBar(total, remaining, contentWidth, opts)
     if not total or total <= 0 then
-        return nil, nil
-    end
-    local sent = math.max(total - remaining, 0)
-    local ratio = math.min(sent / total, 1)
-    local percent = math.floor(ratio * 100 + 0.5)
-    local rounded = math.floor((percent + 2.5) / 5) * 5
-    if rounded < 0 then rounded = 0 end
-    if rounded > 100 then rounded = 100 end
-    return rounded, ratio
-end
-
-local function DrawProgressBar(total, remaining, contentWidth, paletteIndex)
-    local percent = GetProgress(total, remaining)
-    if not percent then
         return
     end
-    local palettes = {
-        {name = "cool-warm", stops = {
-            {0.15, 0.6, 1.0}, {0.5, 0.9, 0.9}, {1.0, 0.55, 0.15}
-        }},
-        {name = "mint-sky", stops = {
-            {0.2, 0.9, 0.7}, {0.25, 0.85, 0.95}, {0.3, 0.7, 1.0}
-        }},
-        {name = "gold-ember", stops = {
-            {0.9, 0.8, 0.2}, {1.0, 0.65, 0.2}, {1.0, 0.4, 0.1}
-        }},
-        {name = "money-green", stops = {
-            {0.2, 0.8, 0.4}, {0.18, 0.7, 0.5}, {0.1, 0.55, 0.25}
-        }},
-    }
-    local palette = palettes[paletteIndex] or palettes[1]
-    local charWidth = GUI:CalcTextSize("$")
+    opts = opts or {}
+    local charWidth = GUI:CalcTextSize("-")
     if not charWidth or charWidth <= 0 then
         charWidth = 6
     end
-    local maxChars = math.max(20, math.floor(contentWidth / charWidth))
-    local filled = math.floor((percent / 100) * maxChars + 0.5)
-    local phase = (os.clock() * 1.6) % 1.0
-    local runner = math.floor(phase * maxChars) + 1
-    for i = 1, maxChars do
-        local pos = (i - 1) / math.max(maxChars - 1, 1)
-        local t = 1 - pos
-        local stops = palette.stops
-        local segs = #stops - 1
+    local maxChars = 20
+    local sent = math.max(total - remaining, 0)
+    local steps = math.max(1, math.ceil(total / TMG.MAX_TRADE_GIL))
+    local stepAmount = total / steps
+    local completedTrades = math.floor((sent / stepAmount) + 0.0001)
+    if completedTrades < 0 then completedTrades = 0 end
+    if completedTrades > steps then completedTrades = steps end
+    local blocksPerStep = maxChars / steps
+    local filled = math.floor(completedTrades * blocksPerStep + 0.0001)
+    if filled > maxChars then filled = maxChars end
+    local blinkStart = nil
+    local blinkEnd = nil
+    if completedTrades < steps then
+        blinkStart = filled + 1
+        blinkEnd = math.floor((completedTrades + 1) * blocksPerStep + 0.0001)
+        if blinkEnd < blinkStart then
+            blinkEnd = blinkStart
+        end
+        if blinkEnd > maxChars then
+            blinkEnd = maxChars
+        end
+    end
+    local spacing = 0
+    if maxChars > 1 then
+        spacing = math.max(0, (contentWidth - (charWidth * maxChars)) / (maxChars - 1))
+    end
+    local frameStep = 1000 / 24
+    local nowMs = Now()
+    local quantizedMs = math.floor(nowMs / frameStep) * frameStep
+    local blinkMs = tonumber(opts.blinkMs) or 700
+    local blinkOn = ((quantizedMs % blinkMs) / blinkMs) < 0.5
+    local filledStops = {
+        {0.22, 0.52, 0.22},
+        {0.2, 0.75, 0.35},
+        {0.55, 0.9, 0.6},
+    }
+    local function FilledGradient(t)
+        local segs = #filledStops - 1
         local scaled = t * segs
         local idx = math.min(segs, math.floor(scaled) + 1)
         local lt = scaled - (idx - 1)
-        local s1 = stops[idx]
-        local s2 = stops[idx + 1]
+        local s1 = filledStops[idx]
+        local s2 = filledStops[idx + 1]
         local r = s1[1] + (s2[1] - s1[1]) * lt
         local g = s1[2] + (s2[2] - s1[2]) * lt
         local b = s1[3] + (s2[3] - s1[3]) * lt
-        local runnerBoost = (i == runner) and 0.55 or 0
+        return r, g, b
+    end
+    local emptyR, emptyG, emptyB = 0.2, 0.2, 0.2
+    for i = 1, maxChars do
+        local r, g, b = emptyR, emptyG, emptyB
+        local ch = "-"
         if i <= filled then
-            r = math.min(1.0, r + 0.2 + runnerBoost)
-            g = math.min(1.0, g + 0.2 + runnerBoost)
-            b = math.min(1.0, b + 0.2 + runnerBoost)
-        else
-            r = math.min(1.0, (r * 0.4) + runnerBoost)
-            g = math.min(1.0, (g * 0.4) + runnerBoost)
-            b = math.min(1.0, (b * 0.4) + runnerBoost)
+            local t = (i - 1) / math.max(maxChars - 1, 1)
+            r, g, b = FilledGradient(t)
+            ch = "="
         end
-        GUI:TextColored(r, g, b, 1.0, "-")
+        if blinkStart and blinkEnd and i >= blinkStart and i <= blinkEnd then
+            if blinkOn then
+                local t = (i - 1) / math.max(maxChars - 1, 1)
+                r, g, b = FilledGradient(t)
+                ch = "="
+            else
+                r, g, b = emptyR, emptyG, emptyB
+                ch = "-"
+            end
+        end
+        GUI:TextColored(r, g, b, 1.0, ch)
         if i < maxChars then
-            GUI:SameLine(0, 0)
+            GUI:SameLine(0, spacing)
         end
     end
 end
@@ -373,6 +385,9 @@ end
 
 -- Get target (player)
 GetTarget = function()
+    if not Player then
+        return nil
+    end
     local target = Player:GetTarget()
     if table.valid(target) then 
         return target 
@@ -717,14 +732,14 @@ function TMG.Draw()
     GUI:PushStyleVar(GUI.StyleVar_WindowRounding, 6)
     GUI:PushStyleVar(GUI.StyleVar_FrameRounding, 4)
     GUI:PushStyleVar(GUI.StyleVar_WindowPadding, 8, 8)
-    GUI:PushStyleColor(GUI.Col_WindowBg, 0.1, 0.12, 0.13, 0.95)
-    GUI:PushStyleColor(GUI.Col_Border, 0.25, 0.35, 0.38, 1.0)
-    GUI:PushStyleColor(GUI.Col_TitleBg, 0.14, 0.18, 0.2, 1.0)
-    GUI:PushStyleColor(GUI.Col_TitleBgActive, 0.14, 0.18, 0.2, 1.0)
-    GUI:PushStyleColor(GUI.Col_TitleBgCollapsed, 0.14, 0.18, 0.2, 1.0)
-    GUI:PushStyleColor(GUI.Col_FrameBg, 0.16, 0.2, 0.22, 1.0)
-    GUI:PushStyleColor(GUI.Col_FrameBgHovered, 0.2, 0.26, 0.28, 1.0)
-    GUI:PushStyleColor(GUI.Col_FrameBgActive, 0.24, 0.3, 0.32, 1.0)
+    GUI:PushStyleColor(GUI.Col_WindowBg, 0.12, 0.14, 0.16, 0.96)
+    GUI:PushStyleColor(GUI.Col_Border, 0.32, 0.36, 0.42, 1.0)
+    GUI:PushStyleColor(GUI.Col_TitleBg, 0.16, 0.18, 0.2, 1.0)
+    GUI:PushStyleColor(GUI.Col_TitleBgActive, 0.16, 0.18, 0.2, 1.0)
+    GUI:PushStyleColor(GUI.Col_TitleBgCollapsed, 0.16, 0.18, 0.2, 1.0)
+    GUI:PushStyleColor(GUI.Col_FrameBg, 0.18, 0.2, 0.22, 1.0)
+    GUI:PushStyleColor(GUI.Col_FrameBgHovered, 0.22, 0.25, 0.28, 1.0)
+    GUI:PushStyleColor(GUI.Col_FrameBgActive, 0.26, 0.3, 0.34, 1.0)
 
     GUI:SetNextWindowSize(184, 0, GUI.SetCond_Always)
     
@@ -747,12 +762,12 @@ function TMG.Draw()
             if TMG.State.IsReceiving then
                 GUI:TextColored(1.0, 0.7, 0.3, 1.0, "RECV ON. SEND LOCKED.")
             else
-                GUI:TextColored(0.6, 0.95, 0.8, 1.0, FormatNumber(TMG.Settings.AmountToGive) .. " Gil")
+                GUI:TextColored(0.62, 0.85, 0.55, 1.0, FormatNumber(TMG.Settings.AmountToGive) .. " Gil")
             end
             
-            GUI:PushStyleColor(GUI.Col_Button, 0.22, 0.26, 0.28, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.28, 0.34, 0.36, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonActive, 0.32, 0.38, 0.4, 1.0)
+            GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.24, 0.28, 1.0)
+            GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.24, 0.3, 0.36, 1.0)
+            GUI:PushStyleColor(GUI.Col_ButtonActive, 0.28, 0.34, 0.42, 1.0)
 
             local btnW = (contentWidth - gap) / 2
             local inputW = math.max(60, btnW)
@@ -797,9 +812,9 @@ function TMG.Draw()
             local btnLabel = "SHUT UP AND TAKE MY GIL"
             local btnColor
             if TMG.State.IsRunning then
-                btnColor = {0.15, 0.6, 0.5, 1.0}
+                btnColor = {0.2, 0.6, 0.35, 1.0}
             else
-                btnColor = {0.6, 0.2, 0.18, 1.0}
+                btnColor = {0.55, 0.2, 0.2, 1.0}
             end
             
             GUI:PushStyleColor(GUI.Col_Button, btnColor[1], btnColor[2], btnColor[3], btnColor[4])
@@ -840,12 +855,11 @@ function TMG.Draw()
             GUI:PopStyleColor(3)
             
             if TMG.State.IsRunning and not TMG.State.ResultPending then
-                DrawProgressBar(TMG.State.TotalAmount, TMG.State.RemainingAmount, contentWidth, TMG.State.PaletteIndex)
-            else
-                if TMG.State.LastResultAmount and TMG.State.LastResultDuration then
-                    GUI:TextColored(0.6, 1.0, 0.6, 1.0, "Blessed: " .. FormatNumber(TMG.State.LastResultAmount) .. " Gil")
-                    GUI:TextColored(0.7, 0.85, 1.0, 1.0, "Elapsed: " .. FormatDuration(TMG.State.LastResultDuration))
-                end
+                GUI:TextDisabled("Sending...")
+                DrawProgressBar(TMG.State.TotalAmount, TMG.State.RemainingAmount, contentWidth, {})
+            elseif TMG.State.LastResultAmount and TMG.State.LastResultDuration then
+                GUI:TextColored(0.62, 0.85, 0.55, 1.0, "Sent: " .. FormatNumber(TMG.State.LastResultAmount) .. " Gil")
+                GUI:TextColored(0.6, 0.72, 0.9, 1.0, "Time: " .. FormatDuration(TMG.State.LastResultDuration))
             end
         end
         GUI:End()
