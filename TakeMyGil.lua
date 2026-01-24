@@ -33,8 +33,6 @@ TMG.State = {
     ChatTradeReceived = 0,
     CancelledDelayUntil = 0,
     TradeWindowOpenAt = 0,
-    LastGilSetAt = 0,
-    GilSetRetries = 0,
     ReceiveTradeOpenTime = 0,
     ReceiveOtherState = nil,
     ReceiveOtherStateStable = 0,
@@ -44,26 +42,46 @@ TMG.State = {
     MiniDragging = false,
     MiniDragLastX = 0,
     UIOpen = false,
+    LogTimestamps = {},
+    SessionGilStart = nil,
+    SessionMaxNetSent = 0,
 }
 
 TMG.MAX_TRADE_GIL = 1000000
 TMG.MAX_GIL = 999999999
 TMG.DELAY_SHORT = 200
 TMG.DELAY_MEDIUM = 400
-TMG.DELAY_LONG = 600
 TMG.TIMEOUT_TRADE_WINDOW = 10000
 TMG.TIMEOUT_PARTNER = 60000
 TMG.MAX_RETRY = 3
 TMG.TIMEOUT_GIL_UPDATE = 6000
 TMG.TRADE_RANGE = 3.0
 TMG.TARGET_GRACE_MS = 500
-TMG.TRADE_GIL_VERIFY_DELAY = 300
-TMG.MAX_GIL_SET_RETRY = 2
 
 local visible = false
 
 local function Log(msg)
     d("[TakeMyGil] " .. msg)
+end
+
+local function LogThrottle(key, ms, msg)
+    local now = Now()
+    local last = TMG.State.LogTimestamps[key] or 0
+    if TimeSince(last) > ms then
+        TMG.State.LogTimestamps[key] = now
+        Log(msg)
+        return true
+    end
+    return false
+end
+
+local function LogStateChange(newState, prevState, prevEntryTime)
+    local now = Now()
+    local duration = 0
+    if prevEntryTime and prevEntryTime > 0 then
+        duration = TimeSince(prevEntryTime)
+    end
+    Log("State: " .. tostring(prevState) .. " -> " .. tostring(newState) .. " (" .. tostring(duration) .. "ms)")
 end
 
 local function FormatNumber(n)
@@ -85,6 +103,11 @@ local function Throttle(ms)
 end
 
 local function SetState(newState)
+    local prevState = TMG.State.CurrentStep
+    local prevEntry = TMG.State.StateEntryTime
+    if prevState ~= newState then
+        LogStateChange(newState, prevState, prevEntry)
+    end
     TMG.State.CurrentStep = newState
     TMG.State.StateEntryTime = Now()
 end
@@ -143,45 +166,6 @@ local function NormalizeName(s)
     return tostring(s):lower():gsub("%s+", "")
 end
 
-local function ParseNumber(s)
-    if not s then
-        return nil
-    end
-    local digits = tostring(s):gsub("[^0-9]", "")
-    if digits == "" then
-        return nil
-    end
-    return tonumber(digits)
-end
-
-local function GetTradeMyGilAmount()
-    local keys = {"mygil", "mygilmoney", "mygiltxt", "myGil", "myGilText"}
-    for _, k in ipairs(keys) do
-        local v = GetControlData("Trade", k)
-        local n = tonumber(v)
-        if n then
-            return n
-        end
-        n = ParseNumber(v)
-        if n then
-            return n
-        end
-    end
-    local strings = GetControlStrings("Trade")
-    if not table.valid(strings) then
-        return nil
-    end
-    for _, s in pairs(strings) do
-        local line = tostring(s)
-        if line:find("Gil") or line:find("gil") or line:find("ギル") then
-            local n = ParseNumber(line)
-            if n then
-                return n
-            end
-        end
-    end
-    return nil
-end
 
 local function TradeMatchesTarget()
     local target = GetTarget()
@@ -213,10 +197,7 @@ local function ResetSendSessionState()
     TMG.State.GilBeforeSession = nil
     TMG.State.TradeSessionAmount = 0
     TMG.State.InputOkSent = false
-    TMG.State.TotalAmount = 0
     TMG.State.ResultPending = false
-    TMG.State.LastGilSetAt = 0
-    TMG.State.GilSetRetries = 0
     TMG.State.TradeTargetMismatchLogged = false
     ResetTradeChatState()
 end
@@ -475,11 +456,12 @@ local function RunSendLogic()
 
             local dist = GetTargetDistance(target)
             if dist and dist > TMG.TRADE_RANGE and target.pos then
-                Log("Target too far (" .. string.format("%.1f", dist) .. "). Moving closer...")
+                LogThrottle("moving_closer", 1000, "Target too far (" .. string.format("%.1f", dist) .. "). Moving closer...")
                 Player:MoveTo(target.pos.x, target.pos.y, target.pos.z, TMG.TRADE_RANGE, 0, 0, target.id)
                 return
             end
             if IsPlayerMoving() then
+                LogThrottle("pause_movement", 1000, "Player moving. Pausing movement.")
                 Player:PauseMovement()
                 return
             end
@@ -506,6 +488,8 @@ local function RunSendLogic()
                 Log("Timeout waiting for trade window. Retry " .. TMG.State.RetryCount .. "/" .. TMG.MAX_RETRY)
                 SetState("INIT_TRADE")
             end
+        else
+            LogThrottle("wait_window", 1500, "Waiting for trade window...")
         end
 
     elseif state == "INPUT_GIL" then
@@ -518,6 +502,7 @@ local function RunSendLogic()
         if IsControlOpen("Trade") then
             local match = TradeMatchesTarget()
             if match == nil then
+                LogThrottle("match_nil_input_gil", 1000, "Trade target check unavailable (UI strings not ready).")
                 return
             elseif match == false then
                 local grace = TMG.State.TradeWindowOpenAt > 0
@@ -526,6 +511,7 @@ local function RunSendLogic()
                     Log("Trade target mismatch or no target. Waiting.")
                     TMG.State.TradeTargetMismatchLogged = true
                 end
+                LogThrottle("target_mismatch_wait_input_gil", 1500, "Waiting for correct trade target...")
                 return
             end
             TMG.State.TradeTargetMismatchLogged = false
@@ -533,6 +519,7 @@ local function RunSendLogic()
 
         if IsControlOpen("InputNumeric") then
             if not ControlIsReady("InputNumeric") then
+                LogThrottle("inputnumeric_not_ready", 1000, "InputNumeric not ready yet.")
                 return
             end
             if Throttle(TMG.DELAY_SHORT) then
@@ -540,7 +527,6 @@ local function RunSendLogic()
                 Log("Attempting to set Amount via InputNumeric: " .. tostring(amount) .. " (Type: " .. type(amount) .. ")")
                 UseControlAction("InputNumeric", "EnterAmount", amount)
                 TMG.State.InputOkSent = false
-                TMG.State.LastGilSetAt = Now()
                 SetState("WAIT_INPUT_CONFIRM")
             end
             return
@@ -550,7 +536,6 @@ local function RunSendLogic()
             if GameHacks and GameHacks.SetTradeGil then
                 Log("Setting Gil (GameHacks): " .. TMG.State.TradeSessionAmount)
                 GameHacks:SetTradeGil(TMG.State.TradeSessionAmount)
-                TMG.State.LastGilSetAt = Now()
                 SetState("CONFIRM_MY")
                 return
             end
@@ -563,6 +548,8 @@ local function RunSendLogic()
             Log("Gil input timed out. Cancelling trade.")
             UseControlAction("Trade", "Cancel")
             SetState("INIT_TRADE")
+        else
+            LogThrottle("input_gil_wait", 1500, "Waiting to set gil amount...")
         end
 
     elseif state == "WAIT_INPUT_CONFIRM" then
@@ -570,8 +557,9 @@ local function RunSendLogic()
             if ControlIsReady("InputNumeric") and not TMG.State.InputOkSent and Throttle(TMG.DELAY_SHORT) then
                 UseControlAction("InputNumeric", "Ok")
                 TMG.State.InputOkSent = true
-                TMG.State.LastGilSetAt = Now()
+                Log("InputNumeric OK sent.")
             end
+            LogThrottle("wait_input_confirm", 1500, "Waiting for InputNumeric to close...")
             return
         end
         TMG.State.InputOkSent = false
@@ -585,6 +573,7 @@ local function RunSendLogic()
         do
             local match = TradeMatchesTarget()
             if match == nil then
+                LogThrottle("match_nil_confirm_my", 1000, "Trade target check unavailable (UI strings not ready).")
                 return
             elseif match == false then
                 local grace = TMG.State.TradeWindowOpenAt > 0
@@ -593,28 +582,10 @@ local function RunSendLogic()
                     Log("Trade target mismatch or no target. Waiting.")
                     TMG.State.TradeTargetMismatchLogged = true
                 end
+                LogThrottle("target_mismatch_wait_confirm_my", 1500, "Waiting for correct trade target...")
                 return
             end
             TMG.State.TradeTargetMismatchLogged = false
-        end
-        if TMG.State.LastGilSetAt > 0 and TimeSince(TMG.State.LastGilSetAt) < TMG.TRADE_GIL_VERIFY_DELAY then
-            return
-        end
-        local mygil = GetTradeMyGilAmount()
-        if mygil and mygil ~= TMG.State.TradeSessionAmount then
-            if TMG.State.GilSetRetries >= TMG.MAX_GIL_SET_RETRY then
-                Log("Trade gil mismatch persists. Stopping to avoid wrong amount.")
-                TMG.State.IsRunning = false
-                SetState("IDLE")
-                return
-            end
-            if Throttle(TMG.DELAY_MEDIUM) then
-                TMG.State.GilSetRetries = TMG.State.GilSetRetries + 1
-                Log("Trade gil mismatch (" .. tostring(mygil) .. "). Re-entering amount.")
-                UseControlAction("Trade", "Gil")
-                SetState("INPUT_GIL")
-                return
-            end
         end
         local mystate = tonumber(GetControlData("Trade", "mystate") or 0) or 0
         if mystate < 4 and Throttle(TMG.DELAY_MEDIUM) then
@@ -627,17 +598,18 @@ local function RunSendLogic()
         
     elseif state == "WAIT_PARTNER" then
          if IsControlOpen("SelectYesno") then
-             TMG.State.RetryCount = 0
-             SetState("WAIT_FINAL_CONFIRM")
+              TMG.State.RetryCount = 0
+              SetState("WAIT_FINAL_CONFIRM")
          elseif IsControlOpen("Trade") then
-             local mystate = tonumber(GetControlData("Trade", "mystate") or 0) or 0
-             if mystate < 4 and Throttle(TMG.DELAY_MEDIUM) then
-                 UseControlAction("Trade", "Trade")
-             end
+              local mystate = tonumber(GetControlData("Trade", "mystate") or 0) or 0
+              if mystate < 4 and Throttle(TMG.DELAY_MEDIUM) then
+                  UseControlAction("Trade", "Trade")
+              end
+              LogThrottle("wait_partner_trade", 1500, "Waiting for partner confirm...")
          elseif not IsControlOpen("Trade") and not IsControlOpen("SelectYesno") then
-             Log("Trade closed. Verifying via chat/gil update.")
-             TMG.State.GilCheckStart = Now()
-             SetState("WAIT_GIL_UPDATE")
+              Log("Trade closed. Verifying via chat/gil update.")
+              TMG.State.GilCheckStart = Now()
+              SetState("WAIT_GIL_UPDATE")
          elseif StateTimedOut(TMG.TIMEOUT_PARTNER) then
              Log("Partner confirmation timed out. Cancelling.")
              UseControlAction("Trade", "Cancel")
@@ -650,6 +622,7 @@ local function RunSendLogic()
             if Throttle(TMG.DELAY_SHORT) then
                 UseControlAction("SelectYesno", "Yes")
             end
+            LogThrottle("wait_final_confirm", 1500, "Waiting for final confirmation dialog...")
         else
             if IsControlOpen("Trade") then
                 if StateTimedOut(TMG.TIMEOUT_PARTNER) then
@@ -677,35 +650,64 @@ local function RunSendLogic()
             return
         end
 
-        local gilAfter = Inventory:GetCurrencyCountByID(1) or 0
-        local gilBefore = TMG.State.GilBeforeSession or gilAfter
-        local delta = gilBefore - gilAfter
-        local received = TMG.State.ChatTradeReceived or 0
-        local expectedNet = math.max(TMG.State.TradeSessionAmount - received, 0)
-        if expectedNet > 0 and delta >= expectedNet then
-            local applied = expectedNet
-            TMG.State.RemainingAmount = TMG.State.RemainingAmount - applied
-            if TMG.State.RemainingAmount < 0 then TMG.State.RemainingAmount = 0 end
-            TMG.Settings.AmountToGive = TMG.State.RemainingAmount
-            Log("Trade completed (delta). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
-            TMG.State.GilBeforeSession = nil
-            SetState("NEXT_LOOP")
-        elseif TMG.State.ChatTradeComplete and (TMG.State.ChatTradeAmount or received > 0) then
-            local sent = TMG.State.ChatTradeAmount or TMG.State.TradeSessionAmount
-            local net = math.max(sent - received, 0)
-            local applied = math.min(net, math.max(TMG.State.TradeSessionAmount, 0))
-            TMG.State.RemainingAmount = TMG.State.RemainingAmount - applied
-            if TMG.State.RemainingAmount < 0 then TMG.State.RemainingAmount = 0 end
-            TMG.Settings.AmountToGive = TMG.State.RemainingAmount
-            Log("Trade completed (chat fallback). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
-            TMG.State.GilBeforeSession = nil
-            SetState("NEXT_LOOP")
-        elseif TimeSince(TMG.State.GilCheckStart) > TMG.TIMEOUT_GIL_UPDATE then
-            Log("Trade result unconfirmed. Stopping to avoid duplicate send. Gil delta: " .. tostring(delta))
-            TMG.State.GilBeforeSession = nil
-            TMG.State.IsRunning = false
-            SetState("IDLE")
-        end
+            local gilAfter = Inventory:GetCurrencyCountByID(1) or 0
+            local gilBefore = TMG.State.GilBeforeSession or gilAfter
+            local delta = gilBefore - gilAfter
+            local received = TMG.State.ChatTradeReceived or 0
+            local expectedNet = math.max(TMG.State.TradeSessionAmount - received, 0)
+            if expectedNet > 0 and delta >= expectedNet then
+                local applied = expectedNet
+                TMG.State.RemainingAmount = TMG.State.RemainingAmount - applied
+                if TMG.State.RemainingAmount < 0 then TMG.State.RemainingAmount = 0 end
+                TMG.Settings.AmountToGive = TMG.State.RemainingAmount
+                local total = TMG.State.TotalAmount or 0
+                local netSent = math.max(total - TMG.State.RemainingAmount, 0)
+                if netSent > (TMG.State.SessionMaxNetSent or 0) then
+                    TMG.State.SessionMaxNetSent = netSent
+                end
+                Log("Trade completed (delta). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
+                TMG.State.GilBeforeSession = nil
+                SetState("NEXT_LOOP")
+            elseif TMG.State.ChatTradeComplete and (TMG.State.ChatTradeAmount or received > 0) then
+                local sent = TMG.State.ChatTradeAmount or TMG.State.TradeSessionAmount
+                local net = math.max(sent - received, 0)
+                local applied = math.min(net, math.max(TMG.State.TradeSessionAmount, 0))
+                TMG.State.RemainingAmount = TMG.State.RemainingAmount - applied
+                if TMG.State.RemainingAmount < 0 then TMG.State.RemainingAmount = 0 end
+                TMG.Settings.AmountToGive = TMG.State.RemainingAmount
+                local total = TMG.State.TotalAmount or 0
+                local netSent = math.max(total - TMG.State.RemainingAmount, 0)
+                if netSent > (TMG.State.SessionMaxNetSent or 0) then
+                    TMG.State.SessionMaxNetSent = netSent
+                end
+                Log("Trade completed (chat fallback). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
+                TMG.State.GilBeforeSession = nil
+                SetState("NEXT_LOOP")
+            elseif TimeSince(TMG.State.GilCheckStart) > TMG.TIMEOUT_GIL_UPDATE then
+                local sessionStart = TMG.State.SessionGilStart
+                if not sessionStart then
+                    sessionStart = Inventory:GetCurrencyCountByID(1) or 0
+                    TMG.State.SessionGilStart = sessionStart
+                end
+                local cumulativeNet = math.max(sessionStart - gilAfter, 0)
+                local prevNet = TMG.State.SessionMaxNetSent or 0
+                if cumulativeNet > prevNet then
+                    TMG.State.SessionMaxNetSent = cumulativeNet
+                    local total = TMG.State.TotalAmount or 0
+                    TMG.State.RemainingAmount = math.max(total - cumulativeNet, 0)
+                    TMG.Settings.AmountToGive = TMG.State.RemainingAmount
+                    Log("Trade unconfirmed; resynced by cumulative delta. Net: " .. tostring(cumulativeNet) .. " Remaining: " .. tostring(TMG.State.RemainingAmount))
+                    TMG.State.GilBeforeSession = nil
+                    SetState("NEXT_LOOP")
+                else
+                    Log("Trade result unconfirmed. Stopping to avoid duplicate send. Gil delta: " .. tostring(delta))
+                    TMG.State.GilBeforeSession = nil
+                    TMG.State.IsRunning = false
+                    SetState("IDLE")
+                end
+            else
+                LogThrottle("waiting_gil_update", 1500, "Waiting for gil update... delta: " .. tostring(delta))
+            end
     elseif state == "NEXT_LOOP" then
          if Throttle(TMG.DELAY_SHORT) then
               if TMG.State.CancelledDelayUntil and Now() < TMG.State.CancelledDelayUntil then
@@ -713,18 +715,18 @@ local function RunSendLogic()
               end
                if TMG.State.RemainingAmount > 0 then
                    SetState("INIT_TRADE")
-               else
-                   Log("All transfers complete.")
-                   if TMG.State.SendStartTime and TMG.State.TotalAmount > 0 then
-                       TMG.State.LastResultAmount = TMG.State.TotalAmount
-                       TMG.State.LastResultDuration = Now() - TMG.State.SendStartTime
-                       TMG.State.ResultPending = true
-                   end
-                   TMG.State.SendStartTime = nil
-                   TMG.State.RetryCount = 0
-                  SetState("IDLE")
-              end
-          end
+                else
+                    Log("All transfers complete.")
+                    if TMG.State.SendStartTime and TMG.State.TotalAmount > 0 then
+                        TMG.State.LastResultAmount = TMG.State.TotalAmount
+                        TMG.State.LastResultDuration = Now() - TMG.State.SendStartTime
+                        TMG.State.ResultPending = true
+                    end
+                    TMG.State.SendStartTime = nil
+                    TMG.State.RetryCount = 0
+                   SetState("IDLE")
+               end
+           end
     end
 end
 
@@ -804,9 +806,9 @@ function TMG.Draw()
 
             local target = GetTarget()
             if target then
-                GUI:TextDisabled("To: " .. target.name)
+                GUI:TextColored(0.75, 0.78, 0.82, 1.0, "To: " .. target.name)
             else
-                GUI:TextDisabled("To: -")
+                GUI:TextColored(0.75, 0.78, 0.82, 1.0, "To: -")
             end
             
             local btnLabel = "SHUT UP AND TAKE MY GIL"
@@ -835,6 +837,8 @@ function TMG.Draw()
                     TMG.State.TotalAmount = TMG.Settings.AmountToGive
                     TMG.State.RetryCount = 0
                     TMG.State.SendStartTime = Now()
+                    TMG.State.SessionGilStart = Inventory:GetCurrencyCountByID(1) or 0
+                    TMG.State.SessionMaxNetSent = 0
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
                     TMG.State.ResultPending = false
@@ -846,6 +850,8 @@ function TMG.Draw()
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
                     TMG.State.SendStartTime = nil
+                    TMG.State.SessionGilStart = nil
+                    TMG.State.SessionMaxNetSent = 0
                     SetState("IDLE")
                     StopPlayerMovement()
                     Log("Stopped.")
@@ -855,11 +861,68 @@ function TMG.Draw()
             GUI:PopStyleColor(3)
             
             if TMG.State.IsRunning and not TMG.State.ResultPending then
-                GUI:TextDisabled("Sending...")
                 DrawProgressBar(TMG.State.TotalAmount, TMG.State.RemainingAmount, contentWidth, {})
+                local sentSoFar = math.max((TMG.State.TotalAmount or 0) - (TMG.State.RemainingAmount or 0), 0)
+                local sessionGil = TMG.State.SessionGilStart or 0
+                local currentGil = Inventory:GetCurrencyCountByID(1) or 0
+                local function DrawKeyValueRow(label, value, rightEdge, labelW, lr, lg, lb, vr, vg, vb)
+                    local labelPad = 4
+                    local rightPad = 0
+                    local minGap = 4
+                    local valueW = GUI:CalcTextSize(value)
+                    local startX = GUI.GetCursorPosX and GUI:GetCursorPosX() or select(1, GUI:GetCursorPos())
+                    local valueRight = rightEdge - rightPad
+                    local valueStartX = valueRight - valueW
+                    local minStartX = startX + labelW + labelPad + minGap
+                    if valueStartX < minStartX then
+                        valueStartX = minStartX
+                    end
+                    GUI:TextColored(lr, lg, lb, 1.0, label)
+                    GUI:SameLine(0, 0)
+                    GUI:SetCursorPosX(valueStartX)
+                    GUI:TextColored(vr, vg, vb, 1.0, value)
+                end
+                local rightEdge = padX + contentWidth
+                local labelW = math.max(
+                    GUI:CalcTextSize("Start:"),
+                    GUI:CalcTextSize("Current:"),
+                    GUI:CalcTextSize("Sent:")
+                )
+                DrawKeyValueRow("Start:", FormatNumber(sessionGil), rightEdge, labelW, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
+                DrawKeyValueRow("Current:", FormatNumber(currentGil), rightEdge, labelW, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
+                DrawKeyValueRow("Sent:", FormatNumber(sentSoFar), rightEdge, labelW, 0.75, 0.78, 0.82, 0.70, 0.90, 0.60)
             elseif TMG.State.LastResultAmount and TMG.State.LastResultDuration then
-                GUI:TextColored(0.62, 0.85, 0.55, 1.0, "Sent: " .. FormatNumber(TMG.State.LastResultAmount) .. " Gil")
-                GUI:TextColored(0.6, 0.72, 0.9, 1.0, "Time: " .. FormatDuration(TMG.State.LastResultDuration))
+                local sentSoFar = math.max((TMG.State.TotalAmount or 0) - (TMG.State.RemainingAmount or 0), 0)
+                local sessionGil = TMG.State.SessionGilStart or 0
+                local currentGil = Inventory:GetCurrencyCountByID(1) or 0
+                local function DrawKeyValueRow(label, value, rightEdge, labelW, lr, lg, lb, vr, vg, vb)
+                    local labelPad = 4
+                    local rightPad = 0
+                    local minGap = 4
+                    local valueW = GUI:CalcTextSize(value)
+                    local startX = GUI.GetCursorPosX and GUI:GetCursorPosX() or select(1, GUI:GetCursorPos())
+                    local valueRight = rightEdge - rightPad
+                    local valueStartX = valueRight - valueW
+                    local minStartX = startX + labelW + labelPad + minGap
+                    if valueStartX < minStartX then
+                        valueStartX = minStartX
+                    end
+                    GUI:TextColored(lr, lg, lb, 1.0, label)
+                    GUI:SameLine(0, 0)
+                    GUI:SetCursorPosX(valueStartX)
+                    GUI:TextColored(vr, vg, vb, 1.0, value)
+                end
+                local rightEdge = padX + contentWidth
+                local labelWTime = GUI:CalcTextSize("Session Time:")
+                local labelWMain = math.max(
+                    GUI:CalcTextSize("Start:"),
+                    GUI:CalcTextSize("Current:"),
+                    GUI:CalcTextSize("Sent:")
+                )
+                DrawKeyValueRow("Total Time:", FormatDuration(TMG.State.LastResultDuration), rightEdge, labelWTime, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
+                DrawKeyValueRow("Start:", FormatNumber(sessionGil), rightEdge, labelWMain, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
+                DrawKeyValueRow("Current:", FormatNumber(currentGil), rightEdge, labelWMain, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
+                DrawKeyValueRow("Sent:", FormatNumber(sentSoFar), rightEdge, labelWMain, 0.75, 0.78, 0.82, 0.70, 0.90, 0.60)
             end
         end
         GUI:End()
