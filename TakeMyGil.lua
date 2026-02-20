@@ -7,6 +7,8 @@ TMG.Version = "2.1.0"
 
 TMG.Settings = {
     AmountToGive = 0,
+    ChatLocale = "auto",
+    DebugChatLog = false,
 }
 TMG.State = {
     IsRunning = false,
@@ -31,6 +33,7 @@ TMG.State = {
     ChatTradeCancelled = false,
     ChatTradeAmount = nil,
     ChatTradeReceived = 0,
+    ChatLastPoll = 0,
     CancelledDelayUntil = 0,
     TradeWindowOpenAt = 0,
     ReceiveTradeOpenTime = 0,
@@ -45,6 +48,12 @@ TMG.State = {
     LogTimestamps = {},
     SessionGilStart = nil,
     SessionMaxNetSent = 0,
+    LabelWidths = {},
+    LabelWidthsStamp = 0,
+    CharWidth = 0,
+    CharWidthStamp = 0,
+    FontSize = nil,
+    LocaleDetected = false,
 }
 
 TMG.MAX_TRADE_GIL = 1000000
@@ -57,6 +66,24 @@ TMG.MAX_RETRY = 3
 TMG.TIMEOUT_GIL_UPDATE = 6000
 TMG.TRADE_RANGE = 3.0
 TMG.TARGET_GRACE_MS = 500
+TMG.CHAT_POLL_MS = 200
+TMG.ChatPatterns = {
+    TradeComplete = "Trade complete%.",
+    TradeCancel = "Trade cancel",
+    YouHandOver = "You hand over",
+    YouReceive = "You receive",
+    GilToken = "gil",
+}
+TMG.ChatPatternsByLocale = {
+    en = TMG.ChatPatterns,
+    ja = {
+        TradeComplete = "トレードが完了しました%.",
+        TradeCancel = "トレードがキャンセルされました%.",
+        YouHandOver = "ギルを渡しました%.",
+        YouReceive = "ギルを受け取りました%.",
+        GilToken = "ギル",
+    },
+}
 
 local visible = false
 
@@ -92,6 +119,89 @@ local function FormatNumber(n)
         if k == 0 then break end
     end
     return formatted
+end
+
+local function GetCurrentGil()
+    if Inventory and Inventory.GetCurrencyCountByID then
+        return Inventory:GetCurrencyCountByID(1) or 0
+    end
+    return 0
+end
+
+local function GetLabelWidth(label)
+    local now = Now()
+    if GUI.GetFontSize then
+        local size = GUI:GetFontSize()
+        if size and size ~= TMG.State.FontSize then
+            TMG.State.FontSize = size
+            TMG.State.LabelWidths = {}
+            TMG.State.LabelWidthsStamp = 0
+            TMG.State.CharWidth = 0
+            TMG.State.CharWidthStamp = 0
+        end
+    end
+    if TimeSince(TMG.State.LabelWidthsStamp or 0) > 1000 then
+        TMG.State.LabelWidths = {}
+        TMG.State.LabelWidthsStamp = now
+    end
+    local w = TMG.State.LabelWidths[label]
+    if not w then
+        w = GUI:CalcTextSize(label)
+        TMG.State.LabelWidths[label] = w
+    end
+    return w or 0
+end
+
+local function GetCharWidth()
+    local now = Now()
+    if TimeSince(TMG.State.CharWidthStamp or 0) > 1000 or not TMG.State.CharWidth or TMG.State.CharWidth <= 0 then
+        TMG.State.CharWidthStamp = now
+        TMG.State.CharWidth = GUI:CalcTextSize("-") or 0
+        if TMG.State.CharWidth <= 0 then
+            TMG.State.CharWidth = 6
+        end
+    end
+    return TMG.State.CharWidth
+end
+
+local function GetChatPatterns()
+    local locale = TMG.Settings.ChatLocale
+    if locale and TMG.ChatPatternsByLocale[locale] then
+        return TMG.ChatPatternsByLocale[locale]
+    end
+    return TMG.ChatPatterns
+end
+
+local function DetectLocaleFromLine(line)
+    if not line or line == "" then
+        return nil
+    end
+    if line:find("ギル") or line:find("トレード") then
+        return "ja"
+    end
+    local lower = line:lower()
+    if lower:find("gil") or lower:find("trade") then
+        return "en"
+    end
+    return nil
+end
+
+local function DrawKeyValueRow(label, value, rightEdge, labelW, lr, lg, lb, vr, vg, vb)
+    local labelPad = 4
+    local rightPad = 0
+    local minGap = 4
+    local valueW = GUI:CalcTextSize(value)
+    local startX = GUI.GetCursorPosX and GUI:GetCursorPosX() or select(1, GUI:GetCursorPos())
+    local valueRight = rightEdge - rightPad
+    local valueStartX = valueRight - valueW
+    local minStartX = startX + labelW + labelPad + minGap
+    if valueStartX < minStartX then
+        valueStartX = minStartX
+    end
+    GUI:TextColored(lr, lg, lb, 1.0, label)
+    GUI:SameLine(0, 0)
+    GUI:SetCursorPosX(valueStartX)
+    GUI:TextColored(vr, vg, vb, 1.0, value)
 end
 
 local function Throttle(ms)
@@ -222,6 +332,9 @@ local function InitChatCursor()
     TMG.State.ChatLastTimestamp = latest
     TMG.State.ChatLastLines = seen
     ResetTradeChatState()
+    if TMG.Settings.ChatLocale == "auto" then
+        TMG.State.LocaleDetected = false
+    end
 end
 
 local function DrawProgressBar(total, remaining, contentWidth, opts)
@@ -229,10 +342,7 @@ local function DrawProgressBar(total, remaining, contentWidth, opts)
         return
     end
     opts = opts or {}
-    local charWidth = GUI:CalcTextSize("-")
-    if not charWidth or charWidth <= 0 then
-        charWidth = 6
-    end
+    local charWidth = GetCharWidth()
     local maxChars = 20
     local sent = math.max(total - remaining, 0)
     local steps = math.max(1, math.ceil(total / TMG.MAX_TRADE_GIL))
@@ -336,22 +446,34 @@ local function UpdateChatState()
         local isSameTsNewLine = ts == latest and not seen[key]
         if isNewTs or isSameTsNewLine then
             local line = tostring(k.line or "")
-            if line:find("Trade complete%.") then
+            if TMG.Settings.ChatLocale == "auto" and not TMG.State.LocaleDetected then
+                local detected = DetectLocaleFromLine(line)
+                if detected then
+                    TMG.Settings.ChatLocale = detected
+                    TMG.State.LocaleDetected = true
+                    Log("Chat locale auto-detected: " .. tostring(detected))
+                end
+            end
+            local patterns = GetChatPatterns()
+            if line:find(patterns.TradeComplete) then
                 TMG.State.ChatTradeComplete = true
-            elseif line:find("Trade cancel") then
+            elseif line:find(patterns.TradeCancel) then
                 TMG.State.ChatTradeCancelled = true
-            elseif line:find("You hand over") and line:find("gil") then
+            elseif line:find(patterns.YouHandOver) and line:find(patterns.GilToken) then
                 local digits = line:gsub("[^0-9]", "")
                 local amount = tonumber(digits)
                 if amount and amount > 0 then
                     TMG.State.ChatTradeAmount = amount
                 end
-            elseif line:find("You receive") and line:find("gil") then
+            elseif line:find(patterns.YouReceive) and line:find(patterns.GilToken) then
                 local digits = line:gsub("[^0-9]", "")
                 local amount = tonumber(digits)
                 if amount and amount > 0 then
                     TMG.State.ChatTradeReceived = (TMG.State.ChatTradeReceived or 0) + amount
                 end
+            end
+            if TMG.Settings.DebugChatLog then
+                Log("Chat: " .. line)
             end
             if ts > latest then
                 latest = ts
@@ -433,7 +555,7 @@ local function RunSendLogic()
                 SetState("IDLE")
                 return
             end
-            TMG.State.GilBeforeSession = Inventory:GetCurrencyCountByID(1) or 0
+            TMG.State.GilBeforeSession = GetCurrentGil()
             TMG.State.TradeSessionAmount = math.min(TMG.State.RemainingAmount, TMG.MAX_TRADE_GIL)
             InitChatCursor()
             SetState("INPUT_GIL")
@@ -474,7 +596,7 @@ local function RunSendLogic()
 
     elseif state == "WAIT_WINDOW" then
         if IsControlOpen("Trade") then
-            TMG.State.GilBeforeSession = Inventory:GetCurrencyCountByID(1) or 0
+            TMG.State.GilBeforeSession = GetCurrentGil()
             TMG.State.TradeSessionAmount = math.min(TMG.State.RemainingAmount, TMG.MAX_TRADE_GIL)
             InitChatCursor()
             SetState("INPUT_GIL")
@@ -638,9 +760,12 @@ local function RunSendLogic()
         end
 
     elseif state == "WAIT_GIL_UPDATE" then
-        UpdateChatState()
+        if TimeSince(TMG.State.ChatLastPoll or 0) > TMG.CHAT_POLL_MS then
+            TMG.State.ChatLastPoll = Now()
+            UpdateChatState()
+        end
         if TMG.State.GilBeforeSession == nil then
-            TMG.State.GilBeforeSession = Inventory:GetCurrencyCountByID(1) or 0
+            TMG.State.GilBeforeSession = GetCurrentGil()
         end
         if TMG.State.ChatTradeCancelled then
             Log("Trade cancelled via chat log.")
@@ -650,7 +775,7 @@ local function RunSendLogic()
             return
         end
 
-            local gilAfter = Inventory:GetCurrencyCountByID(1) or 0
+            local gilAfter = GetCurrentGil()
             local gilBefore = TMG.State.GilBeforeSession or gilAfter
             local delta = gilBefore - gilAfter
             local received = TMG.State.ChatTradeReceived or 0
@@ -686,7 +811,7 @@ local function RunSendLogic()
             elseif TimeSince(TMG.State.GilCheckStart) > TMG.TIMEOUT_GIL_UPDATE then
                 local sessionStart = TMG.State.SessionGilStart
                 if not sessionStart then
-                    sessionStart = Inventory:GetCurrencyCountByID(1) or 0
+                    sessionStart = GetCurrentGil()
                     TMG.State.SessionGilStart = sessionStart
                 end
                 local cumulativeNet = math.max(sessionStart - gilAfter, 0)
@@ -743,7 +868,13 @@ function TMG.Draw()
     GUI:PushStyleColor(GUI.Col_FrameBgHovered, 0.22, 0.25, 0.28, 1.0)
     GUI:PushStyleColor(GUI.Col_FrameBgActive, 0.26, 0.3, 0.34, 1.0)
 
-    GUI:SetNextWindowSize(184, 0, GUI.SetCond_Always)
+    local minWidth = math.max(
+        184,
+        GetLabelWidth("SHUT UP AND TAKE MY GIL") + 16,
+        GetLabelWidth("RECV ON. SEND LOCKED.") + 16,
+        GetLabelWidth("000,000,000 Gil") + 16
+    )
+    GUI:SetNextWindowSize(minWidth, 0, GUI.SetCond_Always)
     
     local flags = GUI.WindowFlags_NoResize + GUI.WindowFlags_AlwaysAutoResize
     if TMG.State.UIOpen then
@@ -758,7 +889,7 @@ function TMG.Draw()
             local padX = 8
             local gap = 6
             local contentWidth = math.max(120, GUI:GetWindowWidth() - (padX * 2))
-            local currentGil = Inventory:GetCurrencyCountByID(1) or 0
+            local currentGil = GetCurrentGil()
             local maxGive = math.min(currentGil, TMG.MAX_GIL)
             
             if TMG.State.IsReceiving then
@@ -766,7 +897,7 @@ function TMG.Draw()
             else
                 GUI:TextColored(0.62, 0.85, 0.55, 1.0, FormatNumber(TMG.Settings.AmountToGive) .. " Gil")
             end
-            
+
             GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.24, 0.28, 1.0)
             GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.24, 0.3, 0.36, 1.0)
             GUI:PushStyleColor(GUI.Col_ButtonActive, 0.28, 0.34, 0.42, 1.0)
@@ -800,7 +931,7 @@ function TMG.Draw()
             if GUI:Button("ALL", btnW, 22) then 
                 TMG.Settings.AmountToGive = maxGive
             end
-            
+
             GUI:Spacing()
             GUI:PopStyleColor(3)
 
@@ -837,7 +968,7 @@ function TMG.Draw()
                     TMG.State.TotalAmount = TMG.Settings.AmountToGive
                     TMG.State.RetryCount = 0
                     TMG.State.SendStartTime = Now()
-                    TMG.State.SessionGilStart = Inventory:GetCurrencyCountByID(1) or 0
+                    TMG.State.SessionGilStart = GetCurrentGil()
                     TMG.State.SessionMaxNetSent = 0
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
@@ -864,29 +995,12 @@ function TMG.Draw()
                 DrawProgressBar(TMG.State.TotalAmount, TMG.State.RemainingAmount, contentWidth, {})
                 local sentSoFar = math.max((TMG.State.TotalAmount or 0) - (TMG.State.RemainingAmount or 0), 0)
                 local sessionGil = TMG.State.SessionGilStart or 0
-                local currentGil = Inventory:GetCurrencyCountByID(1) or 0
-                local function DrawKeyValueRow(label, value, rightEdge, labelW, lr, lg, lb, vr, vg, vb)
-                    local labelPad = 4
-                    local rightPad = 0
-                    local minGap = 4
-                    local valueW = GUI:CalcTextSize(value)
-                    local startX = GUI.GetCursorPosX and GUI:GetCursorPosX() or select(1, GUI:GetCursorPos())
-                    local valueRight = rightEdge - rightPad
-                    local valueStartX = valueRight - valueW
-                    local minStartX = startX + labelW + labelPad + minGap
-                    if valueStartX < minStartX then
-                        valueStartX = minStartX
-                    end
-                    GUI:TextColored(lr, lg, lb, 1.0, label)
-                    GUI:SameLine(0, 0)
-                    GUI:SetCursorPosX(valueStartX)
-                    GUI:TextColored(vr, vg, vb, 1.0, value)
-                end
+                local currentGil = GetCurrentGil()
                 local rightEdge = padX + contentWidth
                 local labelW = math.max(
-                    GUI:CalcTextSize("Start:"),
-                    GUI:CalcTextSize("Current:"),
-                    GUI:CalcTextSize("Sent:")
+                    GetLabelWidth("Start:"),
+                    GetLabelWidth("Current:"),
+                    GetLabelWidth("Sent:")
                 )
                 DrawKeyValueRow("Start:", FormatNumber(sessionGil), rightEdge, labelW, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
                 DrawKeyValueRow("Current:", FormatNumber(currentGil), rightEdge, labelW, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
@@ -894,30 +1008,13 @@ function TMG.Draw()
             elseif TMG.State.LastResultAmount and TMG.State.LastResultDuration then
                 local sentSoFar = math.max((TMG.State.TotalAmount or 0) - (TMG.State.RemainingAmount or 0), 0)
                 local sessionGil = TMG.State.SessionGilStart or 0
-                local currentGil = Inventory:GetCurrencyCountByID(1) or 0
-                local function DrawKeyValueRow(label, value, rightEdge, labelW, lr, lg, lb, vr, vg, vb)
-                    local labelPad = 4
-                    local rightPad = 0
-                    local minGap = 4
-                    local valueW = GUI:CalcTextSize(value)
-                    local startX = GUI.GetCursorPosX and GUI:GetCursorPosX() or select(1, GUI:GetCursorPos())
-                    local valueRight = rightEdge - rightPad
-                    local valueStartX = valueRight - valueW
-                    local minStartX = startX + labelW + labelPad + minGap
-                    if valueStartX < minStartX then
-                        valueStartX = minStartX
-                    end
-                    GUI:TextColored(lr, lg, lb, 1.0, label)
-                    GUI:SameLine(0, 0)
-                    GUI:SetCursorPosX(valueStartX)
-                    GUI:TextColored(vr, vg, vb, 1.0, value)
-                end
+                local currentGil = GetCurrentGil()
                 local rightEdge = padX + contentWidth
-                local labelWTime = GUI:CalcTextSize("Session Time:")
+                local labelWTime = GetLabelWidth("Session Time:")
                 local labelWMain = math.max(
-                    GUI:CalcTextSize("Start:"),
-                    GUI:CalcTextSize("Current:"),
-                    GUI:CalcTextSize("Sent:")
+                    GetLabelWidth("Start:"),
+                    GetLabelWidth("Current:"),
+                    GetLabelWidth("Sent:")
                 )
                 DrawKeyValueRow("Total Time:", FormatDuration(TMG.State.LastResultDuration), rightEdge, labelWTime, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
                 DrawKeyValueRow("Start:", FormatNumber(sessionGil), rightEdge, labelWMain, 0.75, 0.78, 0.82, 0.75, 0.78, 0.82)
@@ -933,8 +1030,8 @@ function TMG.Draw()
 
     local sw, sh = GUI:GetScreenSize()
     local sendLabel, recvLabel = "SEND", "RECV"
-    local sendW = math.max(36, GUI:CalcTextSize(sendLabel) + 12)
-    local recvW = math.max(36, GUI:CalcTextSize(recvLabel) + 12)
+    local sendW = math.max(36, GetLabelWidth(sendLabel) + 12)
+    local recvW = math.max(36, GetLabelWidth(recvLabel) + 12)
     local btnH = 22
     local showSend = not TMG.State.UIOpen
     local pad = 2
@@ -1052,6 +1149,16 @@ function TMG.ToggleReceive()
     TMG.State.IsReceiving = true
     InitChatCursor()
     Log("Started Receiving Monitor.")
+end
+
+function TMG.SetDebugChatLog(enabled)
+    TMG.Settings.DebugChatLog = enabled and true or false
+    InitChatCursor()
+    Log("Debug Chat Log: " .. tostring(TMG.Settings.DebugChatLog))
+end
+
+function TMG.ToggleDebugChatLog()
+    TMG.SetDebugChatLog(not TMG.Settings.DebugChatLog)
 end
 
 return TMG
