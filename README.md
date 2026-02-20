@@ -1,42 +1,49 @@
 # TakeMyGil
 
-![TakeMyGil](https://preview.redd.it/man-i-am-hyped-v0-g7nvqbcomv4b1.jpg?width=640&crop=smart&auto=webp&s=d4cfc30f101e7cb92325ac189c37a9f1f0956655)
+トレード送金/受取を補助する FFXIVMinion 用アドオンです。  
+Version: `2.1.0`
 
-A trade helper that automates sending and receiving gil via the trade window.
+## 主な機能
+- 送金を `1,000,000 gil` 単位で自動分割（最大 `999,999,999`）
+- トレード距離まで接近し、移動停止してから処理
+- 金額入力/確認/最終確認を自動実行
+- チャットログ + 所持ギル差分で送金完了を判定
+- 送金中に進捗バーと `Start / Current / Sent` を表示
+- 右下にミニ `SEND` / `RECV` ボタン表示
 
-Version: 2.1.0
+## スクリーンショット仕様
+- 送金開始時: 1回目トレード前に撮影（短い遅延あり）
+- 送金完了時: 全トレード完了後に撮影（短い遅延あり）
+- 中間撮影: 想定トレード回数が11回以上のとき、10回完了ごとに撮影
+- 手動停止時: 完了前の停止のみ撮影
+- 送金完了後にボタンを戻した場合は追加撮影しません
 
-## What it does
-- Splits sending into 1,000,000 gil per trade (max total: 999,999,999)
-- Moves into trade range and pauses movement before initiating trades
-- Automates trade input, confirm, and final confirm
-- Verifies trade completion by chat log and gil delta
-- Shows progress + session stats while sending
-- Mini SEND/RECV buttons at the bottom right
+## 使い方（送金）
+1. トレード対象をターゲットします
+2. ミニ `SEND` を押してメインUIを開きます
+3. 金額を入力（`+1M` / `+10M` / `+100M` / `ALL` 使用可）
+4. `SHUT UP AND TAKE MY GIL` を押して開始します
 
-## How to use (Send)
-1. Target the player you want to trade with.
-2. Click the **SEND** mini button to open the main UI (the mini button hides while the UI is open).
-3. Enter an amount or use +1M / +10M / +100M / ALL.
-4. Press **SHUT UP AND TAKE MY GIL** to start.
-   - Button color shows running/stopped.
-5. While sending, a progress bar plus `Start / Current / Sent` values are shown.
-6. When finished, `Total Time` and final stats are shown. Press the button to clear.
+## 使い方（受取）
+1. ミニ `RECV` で受取監視をON/OFFします
+2. ON中はトレード確認系ダイアログを自動処理します
+3. ON中は `RECV ON. SEND LOCKED.` が表示されます
 
-## How to use (Receive)
-1. Toggle **RECV** using the mini button.
-2. While enabled, Trade/Confirm dialogs are auto-accepted.
-3. When RECV is on, the top line shows `RECV ON. SEND LOCKED.`
+## スクショ結合バッチ（任意）
+`merge_screenshots.bat` / `merge_screenshots.ps1` をスクショ保存フォルダに置いて実行します。
 
-## Notes
-- You cannot start RECV while SEND is running.
-- SEND requires a valid trade target; it waits if the trade target mismatches.
-- If the gil amount cannot be set reliably or the trade outcome is unclear, SEND stops for safety.
-- Partner confirmation is timed out after 60 seconds and the trade is cancelled.
-- If the trade closes unexpectedly, it checks chat/gil deltas to determine progress.
+- 対象: 実行フォルダ直下の `.png/.jpg/.jpeg/.bmp`
+- 結合: 最大4枚（先頭1 + 末尾1 + 等間隔の中間2）
+- 出力: `merge/merged_yyyyMMdd_HHmmss.jpg`
+- 元画像: `archive/` に移動
 
-## Installation
-1. Copy the `TakeMyGil` folder into your `LuaMods` directory:  
+## 注意
+- `SEND` 実行中は `RECV` を開始できません
+- ターゲット不一致時は安全のため待機します
+- 結果不明なトレードは重複送金防止のため停止します
+
+## インストール
+1. `TakeMyGil` フォルダを `LuaMods` に配置  
    `C:\MINIONAPP\Bots\FFXIVMinion64\LuaMods\`
-2. In the Minion menu, choose **Reload Lua**.
-3. The mini buttons will appear at the bottom right.
+2. Minion メニューで `Reload Lua` を実行
+3. 右下にミニボタンが表示されます

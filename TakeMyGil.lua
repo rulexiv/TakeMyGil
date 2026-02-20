@@ -54,6 +54,21 @@ TMG.State = {
     CharWidthStamp = 0,
     FontSize = nil,
     LocaleDetected = false,
+    ScreenshotPrePending = false,
+    ScreenshotPostPending = false,
+    ScreenshotPreTaken = false,
+    ScreenshotPostTaken = false,
+    LastScreenshotAt = 0,
+    ScreenshotPreReadyAt = 0,
+    ScreenshotPostReadyAt = 0,
+    ScreenshotAfterPreDelayUntil = 0,
+    ScreenshotMidPending = false,
+    ScreenshotMidReadyAt = 0,
+    ScreenshotAfterMidDelayUntil = 0,
+    PlannedTrades = 0,
+    CompletedTrades = 0,
+    MidProgressLastShotTrade = 0,
+    SendCompleted = false,
 }
 
 TMG.MAX_TRADE_GIL = 1000000
@@ -67,6 +82,14 @@ TMG.TIMEOUT_GIL_UPDATE = 6000
 TMG.TRADE_RANGE = 3.0
 TMG.TARGET_GRACE_MS = 500
 TMG.CHAT_POLL_MS = 200
+TMG.SCREENSHOT_KEY = 44 -- VK_SNAPSHOT (PrintScreen)
+TMG.SCREENSHOT_COOLDOWN_MS = 800
+TMG.SCREENSHOT_PRE_DELAY_MS = 350
+TMG.SCREENSHOT_AFTER_PRE_MS = 350
+TMG.SCREENSHOT_POST_DELAY_MS = 450
+TMG.SCREENSHOT_MID_INTERVAL_TRADES = 10
+TMG.SCREENSHOT_MID_MIN_TRADES = 11
+TMG.SCREENSHOT_AFTER_MID_MS = 300
 TMG.ChatPatterns = {
     TradeComplete = "Trade complete%.",
     TradeCancel = "Trade cancel",
@@ -226,6 +249,25 @@ local function StateTimedOut(timeoutMs)
     return TimeSince(TMG.State.StateEntryTime) > timeoutMs
 end
 
+local function TriggerGameScreenshot(phase, ignoreCooldown)
+    if type(PressKey) ~= "function" then
+        Log("Screenshot skipped (" .. tostring(phase) .. "): PressKey unavailable.")
+        return false
+    end
+    if not ignoreCooldown and TimeSince(TMG.State.LastScreenshotAt or 0) < TMG.SCREENSHOT_COOLDOWN_MS then
+        LogThrottle("screenshot_cooldown", 1000, "Screenshot cooldown active.")
+        return nil
+    end
+    local ok = pcall(PressKey, TMG.SCREENSHOT_KEY)
+    if ok then
+        TMG.State.LastScreenshotAt = Now()
+        Log("Screenshot requested (" .. tostring(phase) .. ").")
+        return true
+    end
+    Log("Screenshot request failed (" .. tostring(phase) .. ").")
+    return false
+end
+
 local function ControlIsReady(controlName)
     local control = GetControl(controlName)
     if not control or type(control.IsReady) ~= "function" then
@@ -310,6 +352,41 @@ local function ResetSendSessionState()
     TMG.State.ResultPending = false
     TMG.State.TradeTargetMismatchLogged = false
     ResetTradeChatState()
+end
+
+local function SchedulePostScreenshotIfNeeded()
+    if TMG.State.RemainingAmount > 0 then
+        return
+    end
+    TMG.State.SendCompleted = true
+    if not TMG.State.ScreenshotPostPending or TMG.State.ScreenshotPostTaken then
+        return
+    end
+    if (TMG.State.ScreenshotPostReadyAt or 0) > 0 then
+        return
+    end
+    TMG.State.ScreenshotPostReadyAt = Now() + TMG.SCREENSHOT_POST_DELAY_MS
+end
+
+local function NoteTradeCompleted()
+    TMG.State.CompletedTrades = (TMG.State.CompletedTrades or 0) + 1
+    local planned = TMG.State.PlannedTrades or 0
+    if planned < TMG.SCREENSHOT_MID_MIN_TRADES then
+        return
+    end
+    local completed = TMG.State.CompletedTrades or 0
+    if completed <= 0 or (completed % TMG.SCREENSHOT_MID_INTERVAL_TRADES) ~= 0 then
+        return
+    end
+    if (TMG.State.RemainingAmount or 0) <= 0 then
+        return
+    end
+    if TMG.State.MidProgressLastShotTrade == completed then
+        return
+    end
+    TMG.State.ScreenshotMidPending = true
+    TMG.State.ScreenshotMidReadyAt = Now() + TMG.SCREENSHOT_POST_DELAY_MS
+    TMG.State.MidProgressLastShotTrade = completed
 end
 
 local function InitChatCursor()
@@ -588,8 +665,34 @@ local function RunSendLogic()
                 return
             end
 
+            if TMG.State.ScreenshotPrePending and not TMG.State.ScreenshotPreTaken then
+                local preReadyAt = TMG.State.ScreenshotPreReadyAt or 0
+                if preReadyAt > 0 and Now() < preReadyAt then
+                    LogThrottle("wait_pre_screenshot_delay", 1500, "Waiting pre-screenshot delay...")
+                    return
+                end
+                local preShot = TriggerGameScreenshot("before-first-trade")
+                if preShot == nil then
+                    return
+                end
+                TMG.State.ScreenshotPreTaken = preShot and true or false
+                TMG.State.ScreenshotPrePending = false
+                TMG.State.ScreenshotPreReadyAt = 0
+                if preShot then
+                    TMG.State.ScreenshotAfterPreDelayUntil = Now() + TMG.SCREENSHOT_AFTER_PRE_MS
+                else
+                    TMG.State.ScreenshotAfterPreDelayUntil = 0
+                end
+            end
+
+            if (TMG.State.ScreenshotAfterPreDelayUntil or 0) > 0 and Now() < TMG.State.ScreenshotAfterPreDelayUntil then
+                LogThrottle("wait_after_pre_screenshot_delay", 1500, "Waiting before starting trade after screenshot...")
+                return
+            end
+
             Log("Initiating Trade... Remaining: " .. TMG.State.RemainingAmount)
             SendTextCommand("/trade")
+            TMG.State.ScreenshotAfterPreDelayUntil = 0
             InitChatCursor()
             SetState("WAIT_WINDOW")
         end
@@ -771,6 +874,7 @@ local function RunSendLogic()
             Log("Trade cancelled via chat log.")
             ResetSendSessionState()
             TMG.State.CancelledDelayUntil = Now() + 500
+            SchedulePostScreenshotIfNeeded()
             SetState("NEXT_LOOP")
             return
         end
@@ -792,6 +896,8 @@ local function RunSendLogic()
                 end
                 Log("Trade completed (delta). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
                 TMG.State.GilBeforeSession = nil
+                NoteTradeCompleted()
+                SchedulePostScreenshotIfNeeded()
                 SetState("NEXT_LOOP")
             elseif TMG.State.ChatTradeComplete and (TMG.State.ChatTradeAmount or received > 0) then
                 local sent = TMG.State.ChatTradeAmount or TMG.State.TradeSessionAmount
@@ -807,6 +913,8 @@ local function RunSendLogic()
                 end
                 Log("Trade completed (chat fallback). Applied: " .. tostring(applied) .. " Remaining: " .. TMG.State.RemainingAmount)
                 TMG.State.GilBeforeSession = nil
+                NoteTradeCompleted()
+                SchedulePostScreenshotIfNeeded()
                 SetState("NEXT_LOOP")
             elseif TimeSince(TMG.State.GilCheckStart) > TMG.TIMEOUT_GIL_UPDATE then
                 local sessionStart = TMG.State.SessionGilStart
@@ -823,6 +931,8 @@ local function RunSendLogic()
                     TMG.Settings.AmountToGive = TMG.State.RemainingAmount
                     Log("Trade unconfirmed; resynced by cumulative delta. Net: " .. tostring(cumulativeNet) .. " Remaining: " .. tostring(TMG.State.RemainingAmount))
                     TMG.State.GilBeforeSession = nil
+                    NoteTradeCompleted()
+                    SchedulePostScreenshotIfNeeded()
                     SetState("NEXT_LOOP")
                 else
                     Log("Trade result unconfirmed. Stopping to avoid duplicate send. Gil delta: " .. tostring(delta))
@@ -838,10 +948,49 @@ local function RunSendLogic()
               if TMG.State.CancelledDelayUntil and Now() < TMG.State.CancelledDelayUntil then
                   return
               end
+              if TMG.State.ScreenshotMidPending then
+                  local midReadyAt = TMG.State.ScreenshotMidReadyAt or 0
+                  if midReadyAt > 0 and Now() < midReadyAt then
+                      LogThrottle("wait_mid_screenshot_delay", 1500, "Waiting mid-screenshot delay...")
+                      return
+                  end
+                  local midPhase = "mid-progress-" .. tostring(TMG.State.CompletedTrades or 0)
+                  local midShot = TriggerGameScreenshot(midPhase)
+                  if midShot == nil then
+                      return
+                  end
+                  TMG.State.ScreenshotMidPending = false
+                  TMG.State.ScreenshotMidReadyAt = 0
+                  if midShot then
+                      TMG.State.ScreenshotAfterMidDelayUntil = Now() + TMG.SCREENSHOT_AFTER_MID_MS
+                  else
+                      TMG.State.ScreenshotAfterMidDelayUntil = 0
+                  end
+              end
+              if (TMG.State.ScreenshotAfterMidDelayUntil or 0) > 0 and Now() < TMG.State.ScreenshotAfterMidDelayUntil then
+                  LogThrottle("wait_after_mid_screenshot_delay", 1500, "Waiting after mid-screenshot before next trade...")
+                  return
+              end
                if TMG.State.RemainingAmount > 0 then
+                   TMG.State.ScreenshotAfterMidDelayUntil = 0
                    SetState("INIT_TRADE")
                 else
+                    if TMG.State.ScreenshotPostPending and not TMG.State.ScreenshotPostTaken then
+                        local postReadyAt = TMG.State.ScreenshotPostReadyAt or 0
+                        if postReadyAt > 0 and Now() < postReadyAt then
+                            LogThrottle("wait_post_screenshot_delay", 1500, "Waiting post-screenshot delay...")
+                            return
+                        end
+                        local postShot = TriggerGameScreenshot("after-all-transfers")
+                        if postShot == nil then
+                            return
+                        end
+                        TMG.State.ScreenshotPostTaken = postShot and true or false
+                        TMG.State.ScreenshotPostPending = false
+                        TMG.State.ScreenshotPostReadyAt = 0
+                    end
                     Log("All transfers complete.")
+                    TMG.State.SendCompleted = true
                     if TMG.State.SendStartTime and TMG.State.TotalAmount > 0 then
                         TMG.State.LastResultAmount = TMG.State.TotalAmount
                         TMG.State.LastResultDuration = Now() - TMG.State.SendStartTime
@@ -949,7 +1098,7 @@ function TMG.Draw()
             else
                 btnColor = {0.55, 0.2, 0.2, 1.0}
             end
-            
+
             GUI:PushStyleColor(GUI.Col_Button, btnColor[1], btnColor[2], btnColor[3], btnColor[4])
             GUI:PushStyleColor(GUI.Col_ButtonHovered, btnColor[1]+0.1, btnColor[2]+0.1, btnColor[3]+0.1, 1.0)
             GUI:PushStyleColor(GUI.Col_ButtonActive, btnColor[1]-0.1, btnColor[2]-0.1, btnColor[3]-0.1, 1.0)
@@ -973,16 +1122,43 @@ function TMG.Draw()
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
                     TMG.State.ResultPending = false
+                    TMG.State.ScreenshotPrePending = true
+                    TMG.State.ScreenshotPostPending = true
+                    TMG.State.ScreenshotPreTaken = false
+                    TMG.State.ScreenshotPostTaken = false
+                    TMG.State.ScreenshotMidPending = false
+                    TMG.State.ScreenshotMidReadyAt = 0
+                    TMG.State.ScreenshotAfterMidDelayUntil = 0
+                    TMG.State.ScreenshotPreReadyAt = Now() + TMG.SCREENSHOT_PRE_DELAY_MS
+                    TMG.State.ScreenshotPostReadyAt = 0
+                    TMG.State.ScreenshotAfterPreDelayUntil = 0
+                    TMG.State.PlannedTrades = math.ceil((TMG.State.TotalAmount or 0) / TMG.MAX_TRADE_GIL)
+                    TMG.State.CompletedTrades = 0
+                    TMG.State.SendCompleted = false
                     InitChatCursor()
                     SetState("INIT_TRADE")
                     Log("Started Sending " .. TMG.Settings.AmountToGive .. " Gil.")
                 else
+                    if not TMG.State.SendCompleted then
+                        TriggerGameScreenshot("manual-stop", true)
+                    end
                     TMG.State.ResultPending = false
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
                     TMG.State.SendStartTime = nil
                     TMG.State.SessionGilStart = nil
                     TMG.State.SessionMaxNetSent = 0
+                    TMG.State.ScreenshotPrePending = false
+                    TMG.State.ScreenshotPostPending = false
+                    TMG.State.ScreenshotPreTaken = false
+                    TMG.State.ScreenshotPostTaken = false
+                    TMG.State.ScreenshotMidPending = false
+                    TMG.State.ScreenshotMidReadyAt = 0
+                    TMG.State.ScreenshotAfterMidDelayUntil = 0
+                    TMG.State.ScreenshotPreReadyAt = 0
+                    TMG.State.ScreenshotPostReadyAt = 0
+                    TMG.State.ScreenshotAfterPreDelayUntil = 0
+                    TMG.State.SendCompleted = false
                     SetState("IDLE")
                     StopPlayerMovement()
                     Log("Stopped.")
