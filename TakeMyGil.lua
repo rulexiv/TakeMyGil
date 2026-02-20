@@ -54,6 +54,11 @@ TMG.State = {
     CharWidthStamp = 0,
     FontSize = nil,
     LocaleDetected = false,
+    ScreenshotPrePending = false,
+    ScreenshotPostPending = false,
+    ScreenshotPreTaken = false,
+    ScreenshotPostTaken = false,
+    LastScreenshotAt = 0,
 }
 
 TMG.MAX_TRADE_GIL = 1000000
@@ -67,6 +72,8 @@ TMG.TIMEOUT_GIL_UPDATE = 6000
 TMG.TRADE_RANGE = 3.0
 TMG.TARGET_GRACE_MS = 500
 TMG.CHAT_POLL_MS = 200
+TMG.SCREENSHOT_KEY = 44 -- VK_SNAPSHOT (PrintScreen)
+TMG.SCREENSHOT_COOLDOWN_MS = 800
 TMG.ChatPatterns = {
     TradeComplete = "Trade complete%.",
     TradeCancel = "Trade cancel",
@@ -224,6 +231,25 @@ end
 
 local function StateTimedOut(timeoutMs)
     return TimeSince(TMG.State.StateEntryTime) > timeoutMs
+end
+
+local function TriggerGameScreenshot(phase)
+    if type(PressKey) ~= "function" then
+        Log("Screenshot skipped (" .. tostring(phase) .. "): PressKey unavailable.")
+        return false
+    end
+    if TimeSince(TMG.State.LastScreenshotAt or 0) < TMG.SCREENSHOT_COOLDOWN_MS then
+        LogThrottle("screenshot_cooldown", 1000, "Screenshot cooldown active.")
+        return nil
+    end
+    local ok = pcall(PressKey, TMG.SCREENSHOT_KEY)
+    if ok then
+        TMG.State.LastScreenshotAt = Now()
+        Log("Screenshot requested (" .. tostring(phase) .. ").")
+        return true
+    end
+    Log("Screenshot request failed (" .. tostring(phase) .. ").")
+    return false
 end
 
 local function ControlIsReady(controlName)
@@ -588,6 +614,15 @@ local function RunSendLogic()
                 return
             end
 
+            if TMG.State.ScreenshotPrePending and not TMG.State.ScreenshotPreTaken then
+                local preShot = TriggerGameScreenshot("before-first-trade")
+                if preShot == nil then
+                    return
+                end
+                TMG.State.ScreenshotPreTaken = preShot and true or false
+                TMG.State.ScreenshotPrePending = false
+            end
+
             Log("Initiating Trade... Remaining: " .. TMG.State.RemainingAmount)
             SendTextCommand("/trade")
             InitChatCursor()
@@ -841,6 +876,14 @@ local function RunSendLogic()
                if TMG.State.RemainingAmount > 0 then
                    SetState("INIT_TRADE")
                 else
+                    if TMG.State.ScreenshotPostPending and not TMG.State.ScreenshotPostTaken then
+                        local postShot = TriggerGameScreenshot("after-all-transfers")
+                        if postShot == nil then
+                            return
+                        end
+                        TMG.State.ScreenshotPostTaken = postShot and true or false
+                        TMG.State.ScreenshotPostPending = false
+                    end
                     Log("All transfers complete.")
                     if TMG.State.SendStartTime and TMG.State.TotalAmount > 0 then
                         TMG.State.LastResultAmount = TMG.State.TotalAmount
@@ -973,6 +1016,10 @@ function TMG.Draw()
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
                     TMG.State.ResultPending = false
+                    TMG.State.ScreenshotPrePending = true
+                    TMG.State.ScreenshotPostPending = true
+                    TMG.State.ScreenshotPreTaken = false
+                    TMG.State.ScreenshotPostTaken = false
                     InitChatCursor()
                     SetState("INIT_TRADE")
                     Log("Started Sending " .. TMG.Settings.AmountToGive .. " Gil.")
@@ -983,6 +1030,10 @@ function TMG.Draw()
                     TMG.State.SendStartTime = nil
                     TMG.State.SessionGilStart = nil
                     TMG.State.SessionMaxNetSent = 0
+                    TMG.State.ScreenshotPrePending = false
+                    TMG.State.ScreenshotPostPending = false
+                    TMG.State.ScreenshotPreTaken = false
+                    TMG.State.ScreenshotPostTaken = false
                     SetState("IDLE")
                     StopPlayerMovement()
                     Log("Stopped.")
