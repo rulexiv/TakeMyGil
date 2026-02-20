@@ -233,12 +233,12 @@ local function StateTimedOut(timeoutMs)
     return TimeSince(TMG.State.StateEntryTime) > timeoutMs
 end
 
-local function TriggerGameScreenshot(phase)
+local function TriggerGameScreenshot(phase, ignoreCooldown)
     if type(PressKey) ~= "function" then
         Log("Screenshot skipped (" .. tostring(phase) .. "): PressKey unavailable.")
         return false
     end
-    if TimeSince(TMG.State.LastScreenshotAt or 0) < TMG.SCREENSHOT_COOLDOWN_MS then
+    if not ignoreCooldown and TimeSince(TMG.State.LastScreenshotAt or 0) < TMG.SCREENSHOT_COOLDOWN_MS then
         LogThrottle("screenshot_cooldown", 1000, "Screenshot cooldown active.")
         return nil
     end
@@ -1024,6 +1024,7 @@ function TMG.Draw()
                     SetState("INIT_TRADE")
                     Log("Started Sending " .. TMG.Settings.AmountToGive .. " Gil.")
                 else
+                    TriggerGameScreenshot("manual-stop", true)
                     TMG.State.ResultPending = false
                     TMG.State.LastResultAmount = nil
                     TMG.State.LastResultDuration = nil
