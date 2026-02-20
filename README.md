@@ -1,5 +1,7 @@
 # TakeMyGil
 
+![TakeMyGil](https://preview.redd.it/man-i-am-hyped-v0-g7nvqbcomv4b1.jpg?width=640&crop=smart&auto=webp&s=d4cfc30f101e7cb92325ac189c37a9f1f0956655)
+
 トレード送金/受取を補助する FFXIVMinion 用アドオンです。  
 Version: `2.1.0`
 
