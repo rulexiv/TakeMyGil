@@ -105,6 +105,47 @@ TMG.ChatPatternsByLocale = {
 
 local visible = false
 
+_G.LuaModsMiniBarLayout = _G.LuaModsMiniBarLayout or {}
+if not _G.LuaModsMiniBarLayout.GetLayout then
+    function _G.LuaModsMiniBarLayout.GetLayout()
+        local sw, sh = GUI:GetScreenSize()
+        local innerPad = 2
+        local groupGap = 2
+        local btnH = 22
+        local rightOffset = 230
+        local rightMargin = 8
+        local wtW = math.max(36, GUI:CalcTextSize("WT") + 12)
+        local s2iW = math.max(36, GUI:CalcTextSize("S2I") + 12)
+        local i2sW = math.max(36, GUI:CalcTextSize("I2S") + 12)
+        local sendW = math.max(36, GUI:CalcTextSize("SEND") + 12)
+        local recvW = math.max(36, GUI:CalcTextSize("RECV") + 12)
+        local saddleW = s2iW + innerPad + i2sW
+        local takeMyGilW = sendW + innerPad + recvW
+        local totalW = wtW + groupGap + saddleW + groupGap + takeMyGilW
+        local startX = math.max(0, sw - totalW - rightOffset - rightMargin)
+
+        return {
+            baseY = sh - btnH - 2,
+            btnH = btnH,
+            innerPad = innerPad,
+            positions = {
+                WT = startX,
+                SaddleSwap = startX + wtW + groupGap,
+                TakeMyGil = startX + wtW + groupGap + saddleW + groupGap,
+            },
+            widths = {
+                WT = wtW,
+                S2I = s2iW,
+                I2S = i2sW,
+                SaddleSwap = saddleW,
+                SEND = sendW,
+                RECV = recvW,
+                TakeMyGil = takeMyGilW,
+            },
+        }
+    end
+end
+
 local function Log(msg)
     d("[TakeMyGil] " .. msg)
 end
@@ -1262,21 +1303,17 @@ function TMG.Draw()
     GUI:PopStyleColor(8)
     GUI:PopStyleVar(3)
 
-    local sw, sh = GUI:GetScreenSize()
+    local layout = _G.LuaModsMiniBarLayout.GetLayout()
     local sendLabel, recvLabel = "SEND", "RECV"
-    local sendW = math.max(36, GetLabelWidth(sendLabel) + 12)
-    local recvW = math.max(36, GetLabelWidth(recvLabel) + 12)
-    local btnH = 22
+    local sendW = layout.widths.SEND
+    local recvW = layout.widths.RECV
+    local btnH = layout.btnH
     local showSend = not TMG.State.UIOpen
-    local pad = 2
-    local gap = 2
-    local miniW = sendW + pad + recvW
+    local pad = layout.innerPad
+    local miniW = layout.widths.TakeMyGil
     local miniH = btnH
-    local baseY = sh - miniH - gap
-    if TMG.State.MiniPosX == 0 then
-        TMG.State.MiniPosX = sw - miniW - 230
-    end
-    TMG.State.MiniPosX = math.max(0, math.min(sw - miniW, TMG.State.MiniPosX))
+    local baseY = layout.baseY
+    TMG.State.MiniPosX = layout.positions.TakeMyGil
     GUI:SetNextWindowPos(TMG.State.MiniPosX, baseY, GUI.SetCond_Always)
     GUI:SetNextWindowSize(miniW, miniH, GUI.SetCond_Always)
 
@@ -1298,7 +1335,6 @@ function TMG.Draw()
     if (GUI:Begin("TakeMyGilMini###TakeMyGilMini", true, miniFlags)) then
         local x = 0
         local y = 0
-        local dragHovered = GUI:IsWindowHovered()
         GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.24, 0.26, 1.0)
         GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.26, 0.32, 0.34, 1.0)
         GUI:PushStyleColor(GUI.Col_ButtonActive, 0.3, 0.36, 0.38, 1.0)
@@ -1329,19 +1365,6 @@ function TMG.Draw()
         end
         GUI:PopStyleColor(3)
         
-        if dragHovered and (GUI:IsMouseDown(1) or GUI:IsMouseDragging(1)) then
-            local mx, my = GUI:GetMousePos()
-            if not TMG.State.MiniDragging then
-                TMG.State.MiniDragging = true
-                TMG.State.MiniDragLastX = mx
-            else
-                local dx = mx - (TMG.State.MiniDragLastX or mx)
-                TMG.State.MiniPosX = (TMG.State.MiniPosX or 0) + dx
-                TMG.State.MiniDragLastX = mx
-            end
-        else
-            TMG.State.MiniDragging = false
-        end
     end
     GUI:End()
     GUI:PopStyleColor(2)
