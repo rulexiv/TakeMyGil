@@ -114,6 +114,7 @@ if not _G.LuaModsMiniBarLayout.GetLayout then
         local btnH = 22
         local rightOffset = 230
         local rightMargin = 8
+        local wwW = math.max(36, GUI:CalcTextSize("WW") + 12)
         local wtW = math.max(36, GUI:CalcTextSize("WT") + 12)
         local s2iW = math.max(36, GUI:CalcTextSize("S2I") + 12)
         local i2sW = math.max(36, GUI:CalcTextSize("I2S") + 12)
@@ -121,7 +122,7 @@ if not _G.LuaModsMiniBarLayout.GetLayout then
         local recvW = math.max(36, GUI:CalcTextSize("RECV") + 12)
         local saddleW = s2iW + innerPad + i2sW
         local takeMyGilW = sendW + innerPad + recvW
-        local totalW = wtW + groupGap + saddleW + groupGap + takeMyGilW
+        local totalW = wwW + groupGap + wtW + groupGap + saddleW + groupGap + takeMyGilW
         local startX = math.max(0, sw - totalW - rightOffset - rightMargin)
 
         return {
@@ -129,11 +130,13 @@ if not _G.LuaModsMiniBarLayout.GetLayout then
             btnH = btnH,
             innerPad = innerPad,
             positions = {
-                WT = startX,
-                SaddleSwap = startX + wtW + groupGap,
-                TakeMyGil = startX + wtW + groupGap + saddleW + groupGap,
+                WW = startX,
+                WT = startX + wwW + groupGap,
+                SaddleSwap = startX + wwW + groupGap + wtW + groupGap,
+                TakeMyGil = startX + wwW + groupGap + wtW + groupGap + saddleW + groupGap,
             },
             widths = {
+                WW = wwW,
                 WT = wtW,
                 S2I = s2iW,
                 I2S = i2sW,
