@@ -3,4 +3,4 @@ Name = TakeMyGil
 Version = 1
 Files = TakeMyGil.lua
 Enabled = 1
-Dependencies = minionlib, ffxivminion
+Dependencies = minionlib, ffxivminion, MiniButtonLayout
