@@ -3,7 +3,9 @@
 ![TakeMyGil](https://preview.redd.it/man-i-am-hyped-v0-g7nvqbcomv4b1.jpg?width=640&crop=smart&auto=webp&s=d4cfc30f101e7cb92325ac189c37a9f1f0956655)
 
 FFXIVMinion 用の「送金/受取補助」アドオンです。  
-Version: `2.1.0`
+Version: `2.2.0`
+
+SEND/RECVのデザイン・配置・描画はMiniButtonLayout v2に集約しました。変更は `MiniButtonLayout/MiniButtonLayout.lua` 冒頭の `Design` で行います。SENDの画面表示中はボタン枠を残して非表示にし、RECVの表示位置を維持します。依存先も一緒に更新してください。
 
 ## これは何をするアドオン？
 - プレイヤー間トレードでのギル送金を自動化します

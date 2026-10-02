@@ -3,7 +3,7 @@
 
 local TMG = {}
 TMG.Name = "TakeMyGil"
-TMG.Version = "2.1.0"
+TMG.Version = "2.2.0"
 
 TMG.Settings = {
     AmountToGive = 0,
@@ -105,48 +105,11 @@ TMG.ChatPatternsByLocale = {
 
 local visible = false
 
-_G.LuaModsMiniBarLayout = _G.LuaModsMiniBarLayout or {}
-if not _G.LuaModsMiniBarLayout.GetLayout then
-    function _G.LuaModsMiniBarLayout.GetLayout()
-        local sw, sh = GUI:GetScreenSize()
-        local innerPad = 2
-        local groupGap = 2
-        local btnH = 22
-        local rightOffset = 230
-        local rightMargin = 8
-        local wwW = math.max(36, GUI:CalcTextSize("WW") + 12)
-        local wtW = math.max(36, GUI:CalcTextSize("WT") + 12)
-        local s2iW = math.max(36, GUI:CalcTextSize("S2I") + 12)
-        local i2sW = math.max(36, GUI:CalcTextSize("I2S") + 12)
-        local sendW = math.max(36, GUI:CalcTextSize("SEND") + 12)
-        local recvW = math.max(36, GUI:CalcTextSize("RECV") + 12)
-        local saddleW = s2iW + innerPad + i2sW
-        local takeMyGilW = sendW + innerPad + recvW
-        local totalW = wwW + groupGap + wtW + groupGap + saddleW + groupGap + takeMyGilW
-        local startX = math.max(0, sw - totalW - rightOffset - rightMargin)
-
-        return {
-            baseY = sh - btnH - 2,
-            btnH = btnH,
-            innerPad = innerPad,
-            positions = {
-                WW = startX,
-                WT = startX + wwW + groupGap,
-                SaddleSwap = startX + wwW + groupGap + wtW + groupGap,
-                TakeMyGil = startX + wwW + groupGap + wtW + groupGap + saddleW + groupGap,
-            },
-            widths = {
-                WW = wwW,
-                WT = wtW,
-                S2I = s2iW,
-                I2S = i2sW,
-                SaddleSwap = saddleW,
-                SEND = sendW,
-                RECV = recvW,
-                TakeMyGil = takeMyGilW,
-            },
-        }
-    end
+if LuaModsMiniBarLayout and LuaModsMiniBarLayout.RegisterGroup then
+    LuaModsMiniBarLayout.RegisterGroup("TakeMyGil", {
+        {id = "SEND", label = "SEND"},
+        {id = "RECV", label = "RECV"},
+    })
 end
 
 local function Log(msg)
@@ -1306,72 +1269,20 @@ function TMG.Draw()
     GUI:PopStyleColor(8)
     GUI:PopStyleVar(3)
 
-    local layout = _G.LuaModsMiniBarLayout.GetLayout()
-    local sendLabel, recvLabel = "SEND", "RECV"
-    local sendW = layout.widths.SEND
-    local recvW = layout.widths.RECV
-    local btnH = layout.btnH
-    local showSend = not TMG.State.UIOpen
-    local pad = layout.innerPad
-    local miniW = layout.widths.TakeMyGil
-    local miniH = btnH
-    local baseY = layout.baseY
-    TMG.State.MiniPosX = layout.positions.TakeMyGil
-    GUI:SetNextWindowPos(TMG.State.MiniPosX, baseY, GUI.SetCond_Always)
-    GUI:SetNextWindowSize(miniW, miniH, GUI.SetCond_Always)
-
-    local miniFlags = 0
-    if (GUI.WindowFlags_NoTitleBar)      then miniFlags = miniFlags + GUI.WindowFlags_NoTitleBar end
-    if (GUI.WindowFlags_NoResize)        then miniFlags = miniFlags + GUI.WindowFlags_NoResize end
-    if (GUI.WindowFlags_NoMove)          then miniFlags = miniFlags + GUI.WindowFlags_NoMove end
-    if (GUI.WindowFlags_NoCollapse)      then miniFlags = miniFlags + GUI.WindowFlags_NoCollapse end
-    if (GUI.WindowFlags_NoScrollbar)     then miniFlags = miniFlags + GUI.WindowFlags_NoScrollbar end
-    if (GUI.WindowFlags_NoSavedSettings) then miniFlags = miniFlags + GUI.WindowFlags_NoSavedSettings end
-    if (GUI.WindowFlags_NoBackground)    then miniFlags = miniFlags + GUI.WindowFlags_NoBackground end
-
-    GUI:PushStyleVar(GUI.StyleVar_WindowPadding, 0, 0)
-    GUI:PushStyleVar(GUI.StyleVar_FramePadding, 4, 2)
-    GUI:PushStyleVar(GUI.StyleVar_FrameRounding, 6)
-    GUI:PushStyleVar(GUI.StyleVar_WindowRounding, 0)
-    GUI:PushStyleColor(GUI.Col_WindowBg, 0, 0, 0, 0)
-    GUI:PushStyleColor(GUI.Col_Border, 0, 0, 0, 0)
-    if (GUI:Begin("TakeMyGilMini###TakeMyGilMini", true, miniFlags)) then
-        local x = 0
-        local y = 0
-        GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.24, 0.26, 1.0)
-        GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.26, 0.32, 0.34, 1.0)
-        GUI:PushStyleColor(GUI.Col_ButtonActive, 0.3, 0.36, 0.38, 1.0)
-        GUI:SetCursorPos(x, y)
-        if showSend then
-            if GUI:Button(sendLabel, sendW, btnH) then
-                visible = true
-                TMG.State.UIOpen = true
-            end
-        else
-            GUI:InvisibleButton("##MiniSendHidden", sendW, btnH)
-        end
-        x = x + sendW + pad
-        GUI:SetCursorPos(x, y)
-        GUI:PopStyleColor(3)
-        local recvOn = TMG.State.IsReceiving
-        if recvOn then
-            GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.6, 0.2, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.3, 0.7, 0.3, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonActive, 0.25, 0.65, 0.25, 1.0)
-        else
-            GUI:PushStyleColor(GUI.Col_Button, 0.2, 0.24, 0.26, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonHovered, 0.26, 0.32, 0.34, 1.0)
-            GUI:PushStyleColor(GUI.Col_ButtonActive, 0.3, 0.36, 0.38, 1.0)
-        end
-        if GUI:Button(recvLabel, recvW, btnH) then
-            TMG.ToggleReceive()
-        end
-        GUI:PopStyleColor(3)
-        
+    local bar = LuaModsMiniBarLayout
+    if bar and bar.DrawGroup then
+        local result = bar.DrawGroup("TakeMyGil", {
+            SEND = {
+                visible = not TMG.State.UIOpen,
+                onClick = function() visible = true; TMG.State.UIOpen = true end,
+            },
+            RECV = {
+                state = TMG.State.IsReceiving and "RUN" or "IDLE",
+                onClick = TMG.ToggleReceive,
+            },
+        })
+        if result then TMG.State.MiniPosX = result.bounds.x end
     end
-    GUI:End()
-    GUI:PopStyleColor(2)
-    GUI:PopStyleVar(4)
 end
 
 -- Update Loop
@@ -1425,4 +1336,3 @@ function TMG.ToggleDebugChatLog()
 end
 
 return TMG
-
